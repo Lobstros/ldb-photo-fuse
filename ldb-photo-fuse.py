@@ -5,7 +5,7 @@ ldb-photo-fuse v0.1.
 FUSE mount for user attributes (e.g. jpegPhoto) in LDB files (e.g. SSSD cache).
 Exported file/directory structure:
   /                               (root)
-  └── user@ldapserver.domain      (user subfolder)
+  └── user@ldapserver.domain/     (user subfolder)
       ├── jpegPhoto.jpeg          (profile picture, if exists)
       └── thumbnailPhoto.jpeg     (thumbnail picture, if exists)
 """
@@ -15,15 +15,19 @@ from argparse import ArgumentParser, RawTextHelpFormatter
 from os.path import isdir
 from collections import namedtuple
 from datetime import datetime
+from filecmp import cmp
 from errno import ENOENT
 from ldb import Ldb, FLG_RDONLY
 from fusepy import FUSE, Operations, FuseOSError
+from apscheduler.schedulers.background import BackgroundScheduler
+from pydbus import SystemBus
 
-DEFAULT_MOUNTPOINT = "/mnt/ldb"
+DEFAULT_MOUNTPOINT = "/mnt/ldb-photo"
 PHOTO_FILENAME = "jpegPhoto.jpeg"
 THUMBNAIL_FILENAME = "thumbnailPhoto.jpeg"
+LOGIN_ICON_CHECK_FREQ_MINS = 30
 
-User = namedtuple("User", ("name", "originalModifyTimestamp", "jpegPhoto", "thumbnailPhoto"))
+User = namedtuple("User", ("name", "uidNumber", "originalModifyTimestamp", "jpegPhoto", "thumbnailPhoto"))
 
 
 class UserDataProvider:
@@ -31,7 +35,7 @@ class UserDataProvider:
     Fetches user data from an LDB file, and returns it in a useable format.
     """
 
-    fetch_attrs = ["Dn", "name", "originalModifyTimestamp", "jpegPhoto", "thumbnailPhoto"]
+    fetch_attrs = ["Dn", "name", "uidNumber", "originalModifyTimestamp", "jpegPhoto", "thumbnailPhoto"]
 
     def __init__(self, dbpath):
         self.dbpath = dbpath
@@ -43,6 +47,7 @@ class UserDataProvider:
     @staticmethod
     def _ldb_results_to_user_tuples(results):
         return tuple(User(name=str(res["name"].get(0)),
+                          uidNumber=str(res["uidNumber"].get(0)),
                           originalModifyTimestamp=str(res["originalModifyTimestamp"].get(0)),
                           jpegPhoto=(res["jpegPhoto"].get(0) if res.get("jpegPhoto") else None),
                           thumbnailPhoto=(res["thumbnailPhoto"].get(0) if res.get("thumbnailPhoto") else None)
@@ -163,12 +168,38 @@ class LDBFuse(Operations):
             return user.thumbnailPhoto[offset:offset+length]
 
 
+def dbus_set_icon_path(uid, icon_path):
+    return SystemBus().get("org.freedesktop.Accounts", f"/org/freedesktop/Accounts/User{uid}").SetIconFile(icon_path)
+
+
+def dbus_get_icon_path(uid):
+    return SystemBus().get("org.freedesktop.Accounts", f"/org/freedesktop/Accounts/User{uid}").Get('org.freedesktop.Accounts.User', 'IconFile')
+
+
+def sync_user_icons(user_data_provider, cache_mountpoint):
+    for user in user_data_provider.get_all_users():
+        if user.jpegPhoto:
+            fuse_photo_path = f"{cache_mountpoint}/{user.name}/{PHOTO_FILENAME}"
+            if not cmp(dbus_get_icon_path(user.uidNumber), fuse_photo_path):
+                dbus_set_icon_path(user.uidNumber, fuse_photo_path)
+
+
 if __name__ == "__main__":
     parser = ArgumentParser(description=__doc__, formatter_class=RawTextHelpFormatter)
     parser.add_argument("dbpath", help="SSS database location")
-    parser.add_argument("--mountpoint", help="Path that pictures will be mounted under", default=DEFAULT_MOUNTPOINT)
+    parser.add_argument("--mountpoint", help="Path that pictures will be mounted under.", default=DEFAULT_MOUNTPOINT)
+    parser.add_argument("--allow-other", help="Allow users other than root to access mount", action="store_true")
+    parser.add_argument("--sync-user-icons", help=f"Every {LOGIN_ICON_CHECK_FREQ_MINS} mins, set login icon via D-Bus for users that have a new jpegPhoto. Will overwrite previous picture.", action="store_true")
     args = parser.parse_args()
     if not(isdir(args.mountpoint)):
         raise NotADirectoryError(f"Mountpoint {args.mountpoint} does not exist.")
     provider = UserDataProvider(args.dbpath)
-    FUSE(LDBFuse(provider), args.mountpoint, nothreads=True, foreground=True)
+    if args.sync_user_icons:
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(func=sync_user_icons,
+                          args=(provider, args.mountpoint),
+                          trigger="interval",
+                          minutes=LOGIN_ICON_CHECK_FREQ_MINS
+                          )
+        scheduler.start()
+    FUSE(LDBFuse(provider), args.mountpoint, nothreads=True, foreground=True, allow_other=args.allow_other)

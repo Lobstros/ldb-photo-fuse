@@ -5,7 +5,7 @@ Description=FUSE mount service for cached SSSD user photos
 Type=simple
 User=root
 Group=root
-ExecStart=/usr/local/bin/ldb-photo-fuse --mountpoint /mnt/sss-photo /var/lib/sss/db/cache_YOURDOMAIN.ldb
+ExecStart=/usr/local/bin/ldb-photo-fuse --mountpoint /mnt/sss-photo /var/lib/sss/db/cache_YOURDOMAIN.ldb --sync-user-icons
 
 [Install]
 WantedBy=multi-user.target
