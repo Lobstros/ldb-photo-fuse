@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-ldb-photo-fuse v0.1.
+ldb-photo-fuse v0.2.
 FUSE mount for user attributes (e.g. jpegPhoto) in LDB files (e.g. SSSD cache).
 Exported file/directory structure:
   /                               (root)
