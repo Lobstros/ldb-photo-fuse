@@ -158,9 +158,9 @@ class LDBFuse(Operations):
         user = self.provider.get_user(username)
         # Does Linux read if it can't stat? Maybe the second check isn't necessary.
         if filename == PHOTO_FILENAME and user.jpegPhoto:
-            return user.jpegPhoto[offset:length]
+            return user.jpegPhoto[offset:offset+length]
         if filename == THUMBNAIL_FILENAME and user.thumbnailPhoto:
-            return user.thumbnailPhoto[offset:length]
+            return user.thumbnailPhoto[offset:offset+length]
 
 
 if __name__ == "__main__":
