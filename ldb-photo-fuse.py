@@ -191,7 +191,7 @@ if __name__ == "__main__":
     parser.add_argument("--allow-other", help="Allow users other than root to access mount", action="store_true")
     parser.add_argument("--sync-user-icons", help=f"Every {LOGIN_ICON_CHECK_FREQ_MINS} mins, set login icon via D-Bus for users that have a new jpegPhoto. Will overwrite previous picture.", action="store_true")
     args = parser.parse_args()
-    if not(isdir(args.mountpoint)):
+    if not isdir(args.mountpoint):
         raise NotADirectoryError(f"Mountpoint {args.mountpoint} does not exist.")
     provider = UserDataProvider(args.dbpath)
     if args.sync_user_icons:
