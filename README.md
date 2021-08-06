@@ -12,7 +12,7 @@ Written to propagate a user's LDAP profile picture to the Ubuntu login screen, `
 1. Install requirements: `apt install python3-ldb python3-fusepy python3-pydbus python3-apscheduler`
 2. Instruct SSSD to cache user photos: in `/etc/sssd/sssd.conf`, add `ldap_user_extra_attrs = jpegPhoto` under your LDAP domain heading
 3. Create mountpoint: `mkdir /mnt/sss-photo`
-4. Install application: `cp ldb-photo-fuse.py /usr/local/bin/ldb-photo-fuse`
+4. Install application: `cp ldb-photo-fuse.py /usr/local/sbin/ldb-photo-fuse`
 5. Install systemd service:
     1. Edit arguments in `sss-photo-fuse.service` to point to the LDB file where SSSD caches your domain info (usually `/var/lib/sss/db/cache_YOURDOMAIN.ldb`)
     2. `cp sss-photo-fuse.service /etc/systemd/system/`
