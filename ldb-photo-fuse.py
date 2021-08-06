@@ -180,7 +180,10 @@ def sync_user_icons(user_data_provider, cache_mountpoint):
     for user in user_data_provider.get_all_users():
         if user.jpegPhoto:
             fuse_photo_path = f"{cache_mountpoint}/{user.name}/{PHOTO_FILENAME}"
-            if not cmp(dbus_get_icon_path(user.uidNumber), fuse_photo_path):
+            try:
+                if not cmp(dbus_get_icon_path(user.uidNumber), fuse_photo_path):
+                    dbus_set_icon_path(user.uidNumber, fuse_photo_path)
+            except FileNotFoundError:
                 dbus_set_icon_path(user.uidNumber, fuse_photo_path)
 
 
