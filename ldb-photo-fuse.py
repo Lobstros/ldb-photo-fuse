@@ -6,15 +6,15 @@ FUSE mount for user attributes (e.g. jpegPhoto) in LDB files (e.g. SSSD cache).
 Exported file/directory structure:
   /                               (root)
   └── user@ldapserver.domain/     (user subfolder)
-      ├── jpegPhoto.jpeg          (profile picture, if exists)
-      └── thumbnailPhoto.jpeg     (thumbnail picture, if exists)
+      ├── photo.<extension>       (profile picture, if exists)
+      └── thumbnail.<extension>   (thumbnail picture, if exists)
 """
 
 
 from argparse import ArgumentParser, RawTextHelpFormatter
 from os.path import isdir
-from collections import namedtuple
 from datetime import datetime
+from imghdr import what as imghdr_what
 from filecmp import cmp
 from errno import ENOENT
 from ldb import Ldb, FLG_RDONLY
@@ -23,11 +23,41 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from pydbus import SystemBus
 
 DEFAULT_MOUNTPOINT = "/mnt/ldb-photo"
-PHOTO_FILENAME = "jpegPhoto.jpeg"
-THUMBNAIL_FILENAME = "thumbnailPhoto.jpeg"
 LOGIN_ICON_CHECK_FREQ_MINS = 30
 
-User = namedtuple("User", ("name", "uidNumber", "originalModifyTimestamp", "jpegPhoto", "thumbnailPhoto"))
+
+class User:
+    __slots__ = "name", "uidNumber", "originalModifyTimestamp", "jpegPhoto", "thumbnailPhoto"
+
+    def __init__(self, ldb_res):
+        """Initialises a User object from an LDB search result record."""
+        self.name = str(ldb_res["name"].get(0))
+        self.uidNumber = str(ldb_res["uidNumber"].get(0))
+        self.originalModifyTimestamp = str(ldb_res["originalModifyTimestamp"].get(0))
+        self.jpegPhoto = (ldb_res["jpegPhoto"].get(0) if ldb_res.get("jpegPhoto") else None)
+        self.thumbnailPhoto = (ldb_res["thumbnailPhoto"].get(0) if ldb_res.get("thumbnailPhoto") else None)
+
+    def photo_file_extension(self):
+        """
+        Returns a string that dictates the file extension for this user's photo.
+        The LDAP attribute that stores the photo is (somewhat naïvely) called jpegPhoto, even though the picture data
+        can be in any image format. Sticking the extension `.jpeg` on to such files willy-nilly can make certain
+        userspace applications like `eog` angry.
+        Thus, we need to detect the format to generate an apporpriate extension.
+        """
+        return imghdr_what(None, h=self.jpegPhoto)
+
+    def thumbnail_file_extension(self):
+        """
+        Returns a string that dictates the file extension for this user's thumbnail image.
+        """
+        return imghdr_what(None, h=self.thumbnailPhoto)
+
+    def photo_filename(self):
+        return "photo." + self.photo_file_extension()
+
+    def thumbnail_filename(self):
+        return "thumbnail." + self.thumbnail_file_extension()
 
 
 class UserDataProvider:
@@ -46,12 +76,7 @@ class UserDataProvider:
 
     @staticmethod
     def _ldb_results_to_user_tuples(results):
-        return tuple(User(name=str(res["name"].get(0)),
-                          uidNumber=str(res["uidNumber"].get(0)),
-                          originalModifyTimestamp=str(res["originalModifyTimestamp"].get(0)),
-                          jpegPhoto=(res["jpegPhoto"].get(0) if res.get("jpegPhoto") else None),
-                          thumbnailPhoto=(res["thumbnailPhoto"].get(0) if res.get("thumbnailPhoto") else None)
-                          ) for res in results)
+        return tuple(User(res) for res in results)
 
     def get_all_users(self):
         """
@@ -123,14 +148,14 @@ class LDBFuse(Operations):
             epoch_modified = int(datetime.strptime(user.originalModifyTimestamp, "%Y%m%d%H%M%SZ").timestamp())
             return self._generate_dir_stat(mtime=epoch_modified)
 
-        if filename == PHOTO_FILENAME:
+        if filename == user.photo_filename():
             # Photo file
             if not user.jpegPhoto:
                 raise FuseOSError(ENOENT)
             epoch_modified = int(datetime.strptime(user.originalModifyTimestamp, "%Y%m%d%H%M%SZ").timestamp())
             return self._generate_file_stat(mtime=epoch_modified, size=len(user.jpegPhoto))
 
-        if filename == THUMBNAIL_FILENAME:
+        if filename == user.thumbnail_filename():
             # Photo file
             if not user.thumbnailPhoto:
                 raise FuseOSError(ENOENT)
@@ -151,9 +176,9 @@ class LDBFuse(Operations):
             # Individual user's subfolder
             user = self.provider.get_user(username)
             if user.jpegPhoto:
-                entries.append(PHOTO_FILENAME)
+                entries.append(user.photo_filename())
             if user.thumbnailPhoto:
-                entries.append(THUMBNAIL_FILENAME)
+                entries.append(user.thumbnail_filename())
         for entry in entries:
             yield entry
 
@@ -162,9 +187,9 @@ class LDBFuse(Operations):
         username, filename = self._parse_path(path)
         user = self.provider.get_user(username)
         # Does Linux read if it can't stat? Maybe the second check isn't necessary.
-        if filename == PHOTO_FILENAME and user.jpegPhoto:
+        if user.jpegPhoto and filename == user.photo_filename():
             return user.jpegPhoto[offset:offset+length]
-        if filename == THUMBNAIL_FILENAME and user.thumbnailPhoto:
+        if user.thumbnailPhoto and filename == user.thumbnail_filename():
             return user.thumbnailPhoto[offset:offset+length]
 
 
@@ -179,7 +204,7 @@ def dbus_get_icon_path(uid):
 def sync_user_icons(user_data_provider, cache_mountpoint):
     for user in user_data_provider.get_all_users():
         if user.jpegPhoto:
-            fuse_photo_path = f"{cache_mountpoint}/{user.name}/{PHOTO_FILENAME}"
+            fuse_photo_path = f"{cache_mountpoint}/{user.name}/{user.photo_filename()}"
             try:
                 if not cmp(dbus_get_icon_path(user.uidNumber), fuse_photo_path):
                     dbus_set_icon_path(user.uidNumber, fuse_photo_path)
