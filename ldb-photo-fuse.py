@@ -13,6 +13,7 @@ Exported file/directory structure:
 
 from argparse import ArgumentParser, RawTextHelpFormatter
 from os.path import isdir
+from os import mkdir, rmdir
 from datetime import datetime
 from imghdr import what as imghdr_what
 from filecmp import cmp
@@ -212,6 +213,21 @@ def sync_user_icons(user_data_provider, cache_mountpoint):
                 dbus_set_icon_path(user.uidNumber, fuse_photo_path)
 
 
+class Mountpoint:
+    """Context handler for FUSE mounts that creates mount point beforehand, and removes afterward."""
+    def __init__(self, path):
+        self.path = path
+
+    def __enter__(self):
+        if not isdir(self.path):
+            mkdir(self.path)
+            if not isdir(self.path):
+                raise NotADirectoryError(f"Can't create mount point {self.path}.")
+
+    def __exit__(self, exception_type, exception_value, exception_traceback):
+        rmdir(self.path)
+
+
 if __name__ == "__main__":
     parser = ArgumentParser(description=__doc__, formatter_class=RawTextHelpFormatter)
     parser.add_argument("dbpath", help="SSS database location")
@@ -219,9 +235,8 @@ if __name__ == "__main__":
     parser.add_argument("--allow-other", help="Allow users other than root to access mount", action="store_true")
     parser.add_argument("--sync-user-icons", help=f"Every {LOGIN_ICON_CHECK_FREQ_MINS} mins, set login icon via D-Bus for users that have a new jpegPhoto. Will overwrite previous picture.", action="store_true")
     args = parser.parse_args()
-    if not isdir(args.mountpoint):
-        raise NotADirectoryError(f"Mountpoint {args.mountpoint} does not exist.")
     provider = UserDataProvider(args.dbpath)
+
     if args.sync_user_icons:
         scheduler = BackgroundScheduler()
         scheduler.add_job(func=sync_user_icons,
@@ -230,4 +245,6 @@ if __name__ == "__main__":
                           minutes=LOGIN_ICON_CHECK_FREQ_MINS
                           )
         scheduler.start()
-    FUSE(LDBFuse(provider), args.mountpoint, nothreads=True, foreground=True, allow_other=args.allow_other)
+
+    with Mountpoint(args.mountpoint):
+        FUSE(LDBFuse(provider), args.mountpoint, nothreads=True, foreground=True, allow_other=args.allow_other)
