@@ -22,7 +22,7 @@ from fusepy import FUSE, Operations, FuseOSError
 from apscheduler.schedulers.background import BackgroundScheduler
 from pydbus import SystemBus
 
-DEFAULT_MOUNTPOINT = "/mnt/ldb-photo"
+DEFAULT_MOUNTPOINT = "/run/ldb-photo"
 LOGIN_ICON_CHECK_FREQ_MINS = 30
 
 
