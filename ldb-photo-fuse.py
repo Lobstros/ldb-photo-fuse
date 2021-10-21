@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-ldb-photo-fuse v0.2.
+ldb-photo-fuse v0.3.
 FUSE mount for user attributes (e.g. jpegPhoto) in LDB files (e.g. SSSD cache).
 Exported file/directory structure:
   /                               (root)
@@ -195,11 +195,13 @@ class LDBFuse(Operations):
 
 
 def dbus_set_icon_path(uid, icon_path):
-    return SystemBus().get("org.freedesktop.Accounts", f"/org/freedesktop/Accounts/User{uid}").SetIconFile(icon_path)
+    return SystemBus().get("org.freedesktop.Accounts", f"/org/freedesktop/Accounts/User{uid}")\
+                      .SetIconFile(icon_path)
 
 
 def dbus_get_icon_path(uid):
-    return SystemBus().get("org.freedesktop.Accounts", f"/org/freedesktop/Accounts/User{uid}").Get('org.freedesktop.Accounts.User', 'IconFile')
+    return SystemBus().get("org.freedesktop.Accounts", f"/org/freedesktop/Accounts/User{uid}")\
+                      .Get('org.freedesktop.Accounts.User', 'IconFile')
 
 
 def sync_user_icons(user_data_provider, cache_mountpoint):
@@ -207,6 +209,8 @@ def sync_user_icons(user_data_provider, cache_mountpoint):
         if user.jpegPhoto:
             fuse_photo_path = f"{cache_mountpoint}/{user.name}/{user.photo_filename()}"
             try:
+                # NB: Sometimes SSSD caches users that haven't yet logged on locally.
+                # In this case, dbus raises an exception in get_icon_path(), and we simply move to the next iteration.
                 if not cmp(dbus_get_icon_path(user.uidNumber), fuse_photo_path):
                     dbus_set_icon_path(user.uidNumber, fuse_photo_path)
             except FileNotFoundError:
