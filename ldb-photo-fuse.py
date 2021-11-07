@@ -75,17 +75,13 @@ class UserDataProvider:
         # will clobber the contents of any non-LDB file it's pointed at!
         self.ldb.connect(self.dbpath, FLG_RDONLY)
 
-    @staticmethod
-    def _ldb_results_to_user_tuples(results):
-        return tuple(User(res) for res in results)
-
     def get_all_users(self):
         """
         Fetches all user records.
         :return: Tuple of User namedtuples containing user details.
         """
         results = self.ldb.search(expression="objectCategory=user", attrs=self.fetch_attrs)
-        return self._ldb_results_to_user_tuples(results)
+        return tuple(User(res) for res in results)
 
     def get_user(self, full_username):
         """
@@ -94,7 +90,7 @@ class UserDataProvider:
         """
         results = self.ldb.search(expression=f"name={full_username}", attrs=self.fetch_attrs)
         if results:
-            return self._ldb_results_to_user_tuples(results)[0]
+            return User(results[0])
         else:
             return None
 
