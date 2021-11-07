@@ -7,7 +7,9 @@ Written to propagate a user's LDAP profile picture to the Ubuntu login screen, `
 * Allow access to user photos in an LDB database (e.g. SSSD cache) through the filesystem as a FUSE mount.
 * Automatically set users' profile pictures thus available via DBus.
 
-## Caching photots in SSS and integrating with Ubuntu login icons
+![Demo of user image set in LDAP being propageted to Ubuntu login screen](doc/demo-usage.png)
+
+## How to install for SSSD
 
 1. Install requirements: `apt install python3-ldb python3-fusepy python3-pydbus python3-apscheduler`
 2. Instruct SSSD to cache user photos: in `/etc/sssd/sssd.conf`, add `ldap_user_extra_attrs = jpegPhoto` under your LDAP domain heading
