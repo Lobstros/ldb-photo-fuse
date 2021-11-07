@@ -78,7 +78,7 @@ class UserDataProvider:
     def get_all_users(self):
         """
         Fetches all user records.
-        :return: Tuple of User namedtuples containing user details.
+        :return: Tuple of User objects containing user details.
         """
         results = self.ldb.search(expression="objectCategory=user", attrs=self.fetch_attrs)
         return tuple(User(res) for res in results)
@@ -86,7 +86,7 @@ class UserDataProvider:
     def get_user(self, full_username):
         """
         Searches for a user given their full username "user@ldapserver.domain".
-        :return: User namedtuple containing user details if a match found; None otherwise.
+        :return: User object containing user details if a match found; None otherwise.
         """
         results = self.ldb.search(expression=f"name={full_username}", attrs=self.fetch_attrs)
         if results:
