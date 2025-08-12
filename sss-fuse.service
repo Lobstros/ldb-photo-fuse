@@ -1,0 +1,11 @@
+[Unit]
+Description=FUSE mount service for cached SSSD user photos and sudoers
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/sbin/ldb-fuse --mountpoint /run/sss-fuse /var/lib/sss/db/cache_YOURDOMAIN.ldb --sync-user-icons
+
+[Install]
+WantedBy=multi-user.target

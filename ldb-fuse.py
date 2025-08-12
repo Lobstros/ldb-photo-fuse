@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 
 """
-ldb-photo-fuse v0.3.
-FUSE mount for user attributes (e.g. jpegPhoto) in LDB files (e.g. SSSD cache).
-Exported file/directory structure:
+ldb-fuse v0.4.
+FUSE mount for LDAP information (e.g. user jpegPhoto, sudoers, etc.) in LDB files (e.g. SSSD cache).
+Exported file/directory structure for photos:
   /                               (root)
-  └── user@ldapserver.domain/     (user subfolder)
-      ├── photo.<extension>       (profile picture, if exists)
-      └── thumbnail.<extension>   (thumbnail picture, if exists)
+  ├── users/
+  │   └── user@ldapserver.domain/     (user subfolder)
+  │       ├── photo.<extension>       (profile picture, if exists)
+  │       └── thumbnail.<extension>   (thumbnail picture, if exists)
+  └── sudoers.txt   (text file of newline-separated usernames that are authorised
+                     for ALL sudo commands on this machine)
 """
 
 
 from argparse import ArgumentParser, RawTextHelpFormatter
 from os.path import isdir
-from os import mkdir, rmdir
+from os import makedirs, removedirs
+from socket import gethostname
 from datetime import datetime
 from imghdr import what as imghdr_what
 from filecmp import cmp
@@ -23,7 +27,7 @@ from fusepy import FUSE, Operations, FuseOSError
 from apscheduler.schedulers.background import BackgroundScheduler
 from pydbus import SystemBus
 
-DEFAULT_MOUNTPOINT = "/run/ldb-photo"
+DEFAULT_MOUNTPOINT = "/run/ldb-fuse/"
 LOGIN_ICON_CHECK_FREQ_MINS = 30
 
 
@@ -44,7 +48,7 @@ class User:
         The LDAP attribute that stores the photo is (somewhat naïvely) called jpegPhoto, even though the picture data
         can be in any image format. Sticking the extension `.jpeg` on to such files willy-nilly can make certain
         userspace applications like `eog` angry.
-        Thus, we need to detect the format to generate an apporpriate extension.
+        Thus, we need to detect the format to generate an appropriate extension.
         """
         return imghdr_what(None, h=self.jpegPhoto)
 
@@ -55,9 +59,13 @@ class User:
         return imghdr_what(None, h=self.thumbnailPhoto)
 
     def photo_filename(self):
+        if not self.jpegPhoto:
+            raise FuseOSError(ENOENT)
         return "photo." + self.photo_file_extension()
 
     def thumbnail_filename(self):
+        if not self.thumbnailPhoto:
+            raise FuseOSError(ENOENT)
         return "thumbnail." + self.thumbnail_file_extension()
 
 
@@ -66,7 +74,8 @@ class UserDataProvider:
     Fetches user data from an LDB file, and returns it in a useable format.
     """
 
-    fetch_attrs = ["Dn", "name", "uidNumber", "originalModifyTimestamp", "jpegPhoto", "thumbnailPhoto"]
+    fetch_user_attrs = ["Dn", "name", "uidNumber", "originalModifyTimestamp", "jpegPhoto", "thumbnailPhoto"]
+    fetch_sudoer_attrs = ["sudoUser"]
 
     def __init__(self, dbpath):
         self.dbpath = dbpath
@@ -80,7 +89,7 @@ class UserDataProvider:
         Fetches all user records.
         :return: Tuple of User objects containing user details.
         """
-        results = self.ldb.search(expression="objectCategory=user", attrs=self.fetch_attrs)
+        results = self.ldb.search(expression="objectCategory=user", attrs=self.fetch_user_attrs)
         return tuple(User(res) for res in results)
 
     def get_user(self, full_username):
@@ -88,11 +97,27 @@ class UserDataProvider:
         Searches for a user given their full username "user@ldapserver.domain".
         :return: User object containing user details if a match found; None otherwise.
         """
-        results = self.ldb.search(expression=f"name={full_username}", attrs=self.fetch_attrs)
+        results = self.ldb.search(expression=f"name={full_username}", attrs=self.fetch_user_attrs)
         if results:
             return User(results[0])
-        else:
-            return None
+        return None
+
+    def get_sudoers(self, hostname=None):
+        """
+        Searches for all users that are allowed to sudo execute "ALL" on this (or another given) hostname.
+        :return: Tuple of usernames with sudo permissions.
+        """
+        if hostname is None:
+            hostname = gethostname()
+        results = self.ldb.search(expression=f"(&(sudoHost={hostname})(sudoCommand=ALL))", attrs=self.fetch_sudoer_attrs)
+        return tuple(str(res["sudoUser"].get(0)).removesuffix('@ldap.luffy.ai') for res in results)
+
+    def get_sudoers_as_bytes(self, hostname=None):
+        """
+        Transforms the list of sudoers returned from get_sudoers() into a newline-delimited byte string.
+        :return: Sudoers list as bytes object.
+        """
+        return ("\n".join(self.get_sudoers(hostname))+"\n").encode()
 
 
 class LDBFuse(Operations):
@@ -101,17 +126,6 @@ class LDBFuse(Operations):
     """
     def __init__(self, user_data_provider):
         self.provider = user_data_provider
-
-    @staticmethod
-    def _parse_path(path):
-        """Returns user, filename tuple."""
-        splitpath = path.split("/")
-        if splitpath[1] == "":
-            return None, None
-        elif len(splitpath) == 2:
-            return splitpath[1], None
-        else:
-            return splitpath[1], splitpath[2]
 
     @staticmethod
     def _generate_dir_stat(atime=0, ctime=0, mtime=0, gid=0, uid=0, mode=0o40555, nlink=0, size=0):
@@ -131,79 +145,104 @@ class LDBFuse(Operations):
 
     def getattr(self, path, fh=None):
         """Returns filesystem attributes (type of file object, permissions, etc)"""
-        username, filename = self._parse_path(path)
-        if not username:
-            # Root
-            return self._generate_dir_stat()
+        match path.strip("/").split("/"):
 
-        user = self.provider.get_user(username)
-        if not user:
-            raise FuseOSError(ENOENT)
+            case [""] | ["users"]:
+                # Main root or all users subfolder
+                return self._generate_dir_stat()
 
-        if not filename:
-            # Individual user's subfolder
-            epoch_modified = int(datetime.strptime(user.originalModifyTimestamp, "%Y%m%d%H%M%SZ").timestamp())
-            return self._generate_dir_stat(mtime=epoch_modified)
+            case ["users", username] if user := self.provider.get_user(username):
+                # Individual user's subfolder
+                epoch_modified = int(datetime.strptime(user.originalModifyTimestamp, "%Y%m%d%H%M%SZ").timestamp())
+                return self._generate_dir_stat(mtime=epoch_modified)
 
-        if filename == user.photo_filename():
-            # Photo file
-            if not user.jpegPhoto:
+            case ["users", username, filename] if user := self.provider.get_user(username):
+                # Individual file under user's subfolder
+                if filename == user.photo_filename():
+                    # Photo file
+                    epoch_modified = int(datetime.strptime(user.originalModifyTimestamp, "%Y%m%d%H%M%SZ").timestamp())
+                    return self._generate_file_stat(mtime=epoch_modified, size=len(user.jpegPhoto))
+
+                if filename == user.thumbnail_filename():
+                    # Thumbnail file
+                    epoch_modified = int(datetime.strptime(user.originalModifyTimestamp, "%Y%m%d%H%M%SZ").timestamp())
+                    return self._generate_file_stat(mtime=epoch_modified, size=len(user.thumbnailPhoto))
+
                 raise FuseOSError(ENOENT)
-            epoch_modified = int(datetime.strptime(user.originalModifyTimestamp, "%Y%m%d%H%M%SZ").timestamp())
-            return self._generate_file_stat(mtime=epoch_modified, size=len(user.jpegPhoto))
 
-        if filename == user.thumbnail_filename():
-            # Photo file
-            if not user.thumbnailPhoto:
-                raise FuseOSError(ENOENT)
-            epoch_modified = int(datetime.strptime(user.originalModifyTimestamp, "%Y%m%d%H%M%SZ").timestamp())
-            return self._generate_file_stat(mtime=epoch_modified, size=len(user.thumbnailPhoto))
+            case ["sudoers.txt"]:
+                # Sudoers file
+                return self._generate_file_stat(size=len(self.provider.get_sudoers_as_bytes()))
 
         raise FuseOSError(ENOENT)
 
     def readdir(self, path, fh):
         """Yields directory contents."""
         entries = [".", ".."]
-        username, filename = self._parse_path(path)
-        allusers = self.provider.get_all_users()
-        if username is None:
-            # Root
-            entries.extend(user.name for user in allusers)
-        elif username in (user.name for user in allusers):
-            # Individual user's subfolder
-            user = self.provider.get_user(username)
-            if user.jpegPhoto:
-                entries.append(user.photo_filename())
-            if user.thumbnailPhoto:
-                entries.append(user.thumbnail_filename())
-        for entry in entries:
-            yield entry
+
+        match path.strip("/").split("/"):
+
+            case [""]:
+                # Root
+                entries.extend(["users", "sudoers.txt"])
+
+            case ["users"]:
+                # All users subfolder
+                allusers = self.provider.get_all_users()
+                entries.extend(user.name for user in allusers)
+
+            case ["users", username] if user := self.provider.get_user(username):
+                # Individual user's subfolder
+                if user.jpegPhoto:
+                    entries.append(user.photo_filename())
+                if user.thumbnailPhoto:
+                    entries.append(user.thumbnail_filename())
+
+            case _:
+                raise FuseOSError(ENOENT)
+
+        yield from entries
 
     def read(self, path, length, offset, fh):
         """Returns file byte data."""
-        username, filename = self._parse_path(path)
-        user = self.provider.get_user(username)
-        # Does Linux read if it can't stat? Maybe the second check isn't necessary.
-        if user.jpegPhoto and filename == user.photo_filename():
-            return user.jpegPhoto[offset:offset+length]
-        if user.thumbnailPhoto and filename == user.thumbnail_filename():
-            return user.thumbnailPhoto[offset:offset+length]
+
+        match path.strip("/").split("/"):
+
+            case ["users", username, filename] if user := self.provider.get_user(username):
+                # Individual file under user's subfolder
+                if user.jpegPhoto and filename == user.photo_filename():
+                    return user.jpegPhoto[offset:offset+length]
+                if user.thumbnailPhoto and filename == user.thumbnail_filename():
+                    return user.thumbnailPhoto[offset:offset+length]
+                raise FuseOSError(ENOENT)
+
+            case ["sudoers.txt"]:
+                # Sudoers file
+                return self.provider.get_sudoers_as_bytes()[offset:offset+length]
+
+        raise FuseOSError(ENOENT)
 
 
 def dbus_set_icon_path(uid, icon_path):
+    """Set a user's login icon to the contents of an existing file via DBus"""
     return SystemBus().get("org.freedesktop.Accounts", f"/org/freedesktop/Accounts/User{uid}")\
                       .SetIconFile(icon_path)
 
 
 def dbus_get_icon_path(uid):
+    """Get the path of a user's current login icon via DBus"""
     return SystemBus().get("org.freedesktop.Accounts", f"/org/freedesktop/Accounts/User{uid}")\
                       .Get('org.freedesktop.Accounts.User', 'IconFile')
 
 
-def sync_user_icons(user_data_provider, cache_mountpoint):
+def sync_user_icons(user_data_provider, user_data_path):
+    """
+    For all users in a provider, checks for the existence of a jpegPhoto.
+    If available, and it is different to the user's current profile icon, set it as their new icon.
+    """
     for user in user_data_provider.get_all_users():
         if user.jpegPhoto:
-            fuse_photo_path = f"{cache_mountpoint}/{user.name}/{user.photo_filename()}"
+            fuse_photo_path = f"{user_data_path}/{user.name}/{user.photo_filename()}"
             try:
                 # NB: Sometimes SSSD caches users that haven't yet logged on locally.
                 # In this case, dbus raises a KeyError in get_icon_path(), and we simply move to the next iteration.
@@ -223,19 +262,20 @@ class Mountpoint:
 
     def __enter__(self):
         if not isdir(self.path):
-            mkdir(self.path)
+            makedirs(self.path)
             if not isdir(self.path):
                 raise NotADirectoryError(f"Can't create mount point {self.path}.")
 
     def __exit__(self, exception_type, exception_value, exception_traceback):
-        rmdir(self.path)
+        removedirs(self.path)
 
 
-if __name__ == "__main__":
+def main():
+
     parser = ArgumentParser(description=__doc__, formatter_class=RawTextHelpFormatter)
     parser.add_argument("dbpath", help="SSS database location")
-    parser.add_argument("--mountpoint", help="Path that pictures will be mounted under.", default=DEFAULT_MOUNTPOINT)
-    parser.add_argument("--allow-other", help="Allow users other than root to access mount", action="store_true")
+    parser.add_argument("--mountpoint", help="Path that LDB data will be mounted under.", default=DEFAULT_MOUNTPOINT)
+    parser.add_argument("--allow-other", help="Allow users other than root to access mounts", action="store_true")
     parser.add_argument("--sync-user-icons", help=f"Every {LOGIN_ICON_CHECK_FREQ_MINS} mins, set login icon via D-Bus for users that have a new jpegPhoto. Will overwrite previous picture.", action="store_true")
     args = parser.parse_args()
     provider = UserDataProvider(args.dbpath)
@@ -243,7 +283,7 @@ if __name__ == "__main__":
     if args.sync_user_icons:
         scheduler = BackgroundScheduler()
         scheduler.add_job(func=sync_user_icons,
-                          args=(provider, args.mountpoint),
+                          args=(provider, f"{args.mountpoint}/users"),
                           trigger="interval",
                           minutes=LOGIN_ICON_CHECK_FREQ_MINS
                           )
@@ -251,3 +291,7 @@ if __name__ == "__main__":
 
     with Mountpoint(args.mountpoint):
         FUSE(LDBFuse(provider), args.mountpoint, nothreads=True, foreground=True, allow_other=args.allow_other)
+
+
+if __name__ == "__main__":
+    main()

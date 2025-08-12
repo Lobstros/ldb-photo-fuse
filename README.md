@@ -1,20 +1,22 @@
-# LDB photo FUSE
+# LDB FUSE
 
 > Everything is a file. Even files!
 
-Written to propagate a user's LDAP profile picture to the Ubuntu login screen, `ldb-photo-fuse` can:
+Provides a read-only FUSE view onto contents of an SSSD-cache-style LDB database:
 
-* Allow access to user photos in an LDB database (e.g. SSSD cache) through the filesystem as a FUSE mount.
-* Automatically set users' profile pictures thus available via DBus.
+* User profile photo and thumbnail
+* Sudoers entries
 
-![Demo of user image set in LDAP being propageted to Ubuntu login screen](doc/demo-usage.png)
+Can also automatically set freedesktop user profile pictures thus available via DBus.
+
+![Demo of user image set in LDAP being propagated to Ubuntu login screen](doc/demo-usage.png)
 
 ## How to install for SSSD
 
 1. Install requirements: `apt install python3-ldb python3-fusepy python3-pydbus python3-apscheduler`
 2. Instruct SSSD to cache user photos: in `/etc/sssd/sssd.conf`, add `ldap_user_extra_attrs = jpegPhoto` under your LDAP domain heading
-3. Install application: `cp ldb-photo-fuse.py /usr/local/sbin/ldb-photo-fuse`
+3. Install application: `cp ldb-fuse.py /usr/local/sbin/ldb-fuse`
 4. Install systemd service:
-    1. Edit arguments in `sss-photo-fuse.service` to point to the LDB file where SSSD caches your domain info (usually `/var/lib/sss/db/cache_YOURDOMAIN.ldb`)
-    2. `cp sss-photo-fuse.service /etc/systemd/system/`
-    3. `systemctl enable sss-photo-fuse; systemctl start sss-photo-fuse`
+    1. Edit arguments in `sss-fuse.service` to point to the LDB file where SSSD caches your domain info (usually `/var/lib/sss/db/cache_YOURDOMAIN.ldb`)
+    2. `cp sss-fuse.service /etc/systemd/system/`
+    3. `systemctl enable sss-fuse; systemctl start sss-fuse`
