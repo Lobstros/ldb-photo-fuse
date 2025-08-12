@@ -206,10 +206,13 @@ def sync_user_icons(user_data_provider, cache_mountpoint):
             fuse_photo_path = f"{cache_mountpoint}/{user.name}/{user.photo_filename()}"
             try:
                 # NB: Sometimes SSSD caches users that haven't yet logged on locally.
-                # In this case, dbus raises an exception in get_icon_path(), and we simply move to the next iteration.
+                # In this case, dbus raises a KeyError in get_icon_path(), and we simply move to the next iteration.
                 if not cmp(dbus_get_icon_path(user.uidNumber), fuse_photo_path):
                     dbus_set_icon_path(user.uidNumber, fuse_photo_path)
+            except KeyError:
+                continue
             except FileNotFoundError:
+                # No existing icon, so use the one from the provided path.
                 dbus_set_icon_path(user.uidNumber, fuse_photo_path)
 
 
